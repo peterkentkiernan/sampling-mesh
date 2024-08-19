@@ -3,8 +3,8 @@ import numpy as np
 import typing
 from copy import deepcopy
 from time import time
+
 NDIM = 4
-LEN = 2**NDIM
 
 class Pointer:
     def __init__(self, value):
@@ -77,7 +77,7 @@ class TreeNode:
         if self.type == TreeNode.BRANCH:
             close = np.isclose(pivot, location)
             greater = location > pivot
-            for i in range(LEN):
+            for i in range(2 ** NDIM):
                 index_array = self.index_array(i)
                 if np.all(np.logical_or(index_array.astype(bool) == greater, close)):
                     res = self.children[tuple(index_array)].recfind(location, *self.child_pivot_and_scale(pivot, scale, index_array))
@@ -92,7 +92,8 @@ class TreeNode:
             else:
                 return self.children[tuple(upper_close)]
         elif self.type == TreeNode.BUD:
-            if np.all(np.isclose(location, self.leaf_location(pivot, scale, self.index))):
+            index_array = self.index_array(self.index)
+            if np.all(np.isclose(location, self.leaf_location(pivot, scale, index_array))):
                 return self.children[tuple(index_array)]
             else:
                 return None
@@ -220,7 +221,7 @@ class SamplingMesh:
             return OngoingTask.waiting_task(lambda: node.stable, lambda: self.do_interpolation(location, pivot, scale, node))
 
         data = np.empty((2,) * NDIM)
-        for i in range(LEN):
+        for i in range(2 ** NDIM):
             index_array = node.index_array(i)
             pointer = node.children[tuple(index_array)]
             assert(isinstance(pointer, Pointer))
@@ -250,7 +251,7 @@ class SamplingMesh:
             p3 = parent.corner_value(corner_copy)
             if np.isnan(p3.value):
                 return OngoingTask.waiting_task(lambda: not np.isnan(p3.value), lambda: self.zoom_in(location, pivot, scale, parent, corner))
-            error += np.abs(p1.value - 2 * p2.value + p3.value)/np.sqrt(320)
+            error += np.abs(p1.value - 2 * p2.value + p3.value) * np.sqrt(31 / 120)
             corner_copy[i] = corner[i]
         assert(not np.isnan(error))
         if error > self.atol + self.rtol * np.mean([x.value for x in child.children.flatten()]) or np.any(scale > self.max_leaf_scale):
@@ -260,7 +261,7 @@ class SamplingMesh:
             # Convert the child from a LEAF into a BRANCH with BUD children
             child.type = TreeNode.BRANCH
             child.stable = True
-            for i in range(LEN):
+            for i in range(2 ** NDIM):
                 index = child.index_array(i)
                 child.children[tuple(index)] = TreeNode.bud(child.children[tuple(index)], index)
             corner = (location > pivot).astype(int)
@@ -282,7 +283,7 @@ class SamplingMesh:
             return self.zoom_in(location, pivot, scale, parent, index)
         if bud.type == TreeNode.BRANCH:
             return self.descend_tree(location, pivot, scale, bud)
-
+        
         if np.isnan(bud.value.value):
             return OngoingTask.waiting_task(bud.updated(), lambda: self.bud_to_leaf(location, pivot, scale, parent, index))
 
@@ -290,7 +291,7 @@ class SamplingMesh:
         destinations = []
         calculations = []
         waiting = []
-        for i in range(LEN):
+        for i in range(2 ** NDIM):
             cur_index = bud.index_array(i)
             if np.any(cur_index != index):
                 res = self.root.recfind(location, self.pivot, self.scale)
@@ -334,7 +335,7 @@ class SamplingMesh:
             children = np.empty((2,) * NDIM, dtype=object)
             destinations = []
             calculations = []
-            for i in range(LEN):
+            for i in range(2 ** NDIM):
                 index = TreeNode.index_array(i)
                 if np.all(index == too_low) and self.root is not None:
                     children[tuple(index)] = self.root
@@ -358,13 +359,13 @@ class SamplingMesh:
         if scale is None:
             scale = self.scale
         if node.type == TreeNode.BRANCH:
-            for i in range(LEN):
+            for i in range(2 ** NDIM):
                 index_array = TreeNode.index_array(i)
                 if not self.validate_tree(*TreeNode.child_pivot_and_scale(pivot, scale, index_array), node.children[tuple(index_array)]):
                     return False
             return True
         elif node.type == TreeNode.LEAF:
-            for i in range(LEN):
+            for i in range(2 ** NDIM):
                 index_array = TreeNode.index_array(i)
                 if np.isnan(node.children[tuple(index_array)].value):
                     continue
