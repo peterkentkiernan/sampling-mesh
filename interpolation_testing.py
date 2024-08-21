@@ -1,4 +1,3 @@
-# TODO: Currently exceeds error thresholds, need to debug why
 import multiprocessing as mp
 import numpy as np # Just utility
 import opensimplex # For test functions
@@ -36,4 +35,6 @@ if __name__ == '__main__':
             
             rmse = np.sqrt(np.mean((ys - np.apply_along_axis(f, -1, xs))**2))
             if rmse  > mesh.atol:
-                print(f"Error too high: RMSE of {rmse} exceeds target of {mesh.atol} for {name}.")
+                print(f"WARNING: RMSE of {rmse} exceeds target of {mesh.atol} for {name}.")
+            else:
+                print(f"RMSE of {rmse} within {mesh.atol} for {name}.")
