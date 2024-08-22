@@ -213,8 +213,9 @@ class SamplingMesh:
         self.kwargs = kwargs if kwargs is not None else {}
         self.func_calls = 0
         self.interpolations = 0
+        self.gradients = 0
         self.records = {}
-
+    
     # Position is normalized to have interpolating points at +/- 1 in all dimensions
     # Generalized form of https://en.wikipedia.org/wiki/Bilinear_interpolation
     @staticmethod
@@ -224,6 +225,22 @@ class SamplingMesh:
         for i in range(NDIM):
             interpolated = (1 - position[i]) * interpolated[0,...] + (position[i] + 1) * interpolated[1,...]
         return interpolated / 2**NDIM
+    
+    @staticmethod
+    def gradient(position: np.ndarray, data: np.ndarray, scale: np.ndarray) -> np.ndarray:
+        assert(np.all(position <= 1) and np.all(position >= -1))
+        gradient = np.empty((NDIM,))
+        for i in range(NDIM):
+            diffs = data[(slice(None),) * i + (1,) + (slice(None),) * (NDIM - i - 1)] - \
+                    data[(slice(None),) * i + (0,) + (slice(None),) * (NDIM - i - 1)]
+            
+            for j in range(NDIM):
+                if j != i:
+                    diffs = (1 - position[j]) * diffs[0,...] + (position[j] + 1) * diffs[1,...]
+            
+            gradient[i] = diffs
+        gradient /= scale * 2**(NDIM - 1)
+        return gradient
 
     def submit_func(self, pivot: np.ndarray, scale: np.ndarray, index: np.ndarray):
         self.func_calls += 1
@@ -250,8 +267,7 @@ class SamplingMesh:
             if np.isnan(pointer.value):
                 return OngoingTask.waiting_task(node.updated(pointer), lambda: self.do_interpolation(location, pivot, scale, node))
             data[tuple(index_array)] = pointer.value
-        self.interpolations += 1
-        return OngoingTask.complete_task(self.interpolate(node.normalize_location(pivot, scale, location), data))
+        return OngoingTask.complete_task((node.normalize_location(pivot, scale, location), data, scale))
 
     # scale and pivot are of child, not parent
     def zoom_in(self, location: np.ndarray, pivot: np.ndarray, scale: np.ndarray, parent: TreeNode, corner: np.ndarray) -> OngoingTask:
@@ -472,7 +488,42 @@ class SamplingMesh:
                 if tasks[i] is None:
                     continue
                 if tasks[i].complete():
-                    results[i] = tasks[i].value
+                    position, data, scale = tasks[i].value
+                    self.interpolations += 1
+                    results[i] = self.interpolate(position, data)
+                    tasks[i] = None
+                else:
+                    incomplete = True
+                    if tasks[i].ready():
+                        tasks[i] = tasks[i].next()
+                if DEBUG:
+                    try:
+                        res = self.validate_tree()
+                    except:
+                        res = False
+                    if not res:
+                        print(self.records[tuple(locations[i,:])])
+                        self.print()
+                        raise RuntimeError("Tree has become invalid")
+        return results
+    
+    def multi_gradient(self, locations, max_time = np.inf):
+        start = time()
+        tasks = [self.expand_tree(loc) for loc in locations]
+        results = np.ones((len(tasks), NDIM)) * np.NaN
+
+        incomplete = True
+        while incomplete:
+            if time() - start > max_time:
+                break
+            incomplete = False
+            for i in range(locations.shape[0]):
+                if tasks[i] is None:
+                    continue
+                if tasks[i].complete():
+                    position, data, scale = tasks[i].value
+                    self.gradients += 1
+                    results[i] = self.gradient(position, data, scale)
                     tasks[i] = None
                 else:
                     incomplete = True
