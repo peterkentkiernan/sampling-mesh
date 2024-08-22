@@ -4,6 +4,9 @@ import typing
 from copy import deepcopy
 from time import time
 
+ATOL = 1e-12
+RTOL = 1e-9
+
 NDIM = 4
 DEBUG = False
 
@@ -88,7 +91,7 @@ class TreeNode:
                 print(scale)
                 print(self.scale)
         if self.type == TreeNode.BRANCH:
-            close = np.isclose(pivot, location, atol=1e-10, rtol=0)
+            close = np.isclose(pivot, location, atol=ATOL, rtol=RTOL)
             greater = location > pivot
             for i in range(2 ** NDIM):
                 index_array = self.index_array(i)
@@ -98,15 +101,15 @@ class TreeNode:
                         return res
             return None
         elif self.type == TreeNode.LEAF:
-            lower_close = np.isclose(location, self.leaf_location(pivot, scale, np.zeros(NDIM)), atol=1e-10, rtol=0).astype(int)
-            upper_close = np.isclose(location, self.leaf_location(pivot, scale, np.ones(NDIM)), atol=1e-10, rtol=0).astype(int)
+            lower_close = np.isclose(location, self.leaf_location(pivot, scale, np.zeros(NDIM)), atol=ATOL, rtol=RTOL).astype(int)
+            upper_close = np.isclose(location, self.leaf_location(pivot, scale, np.ones(NDIM)), atol=ATOL, rtol=RTOL).astype(int)
             if np.any(lower_close + upper_close == 0):
                 return None
             else:
                 return self.children[tuple(upper_close)]
         elif self.type == TreeNode.BUD:
             index_array = self.index_array(self.index)
-            if np.allclose(location, self.leaf_location(pivot, scale, index_array), atol=1e-10, rtol=0):
+            if np.allclose(location, self.leaf_location(pivot, scale, index_array), atol=ATOL, rtol=RTOL):
                 return self.children[tuple(index_array)]
             else:
                 return None
@@ -216,9 +219,10 @@ class SamplingMesh:
     # Generalized form of https://en.wikipedia.org/wiki/Bilinear_interpolation
     @staticmethod
     def interpolate(position: np.ndarray, data: np.ndarray) -> float:
+        assert(np.all(position <= 1) and np.all(position >= -1))
         interpolated = data
         for i in range(NDIM):
-            interpolated = np.array([1 - position[i], position[i] + 1]) @ interpolated
+            interpolated = (1 - position[i]) * interpolated[0,...] + (position[i] + 1) * interpolated[1,...]
         return interpolated / 2**NDIM
 
     def submit_func(self, pivot: np.ndarray, scale: np.ndarray, index: np.ndarray):
@@ -227,6 +231,8 @@ class SamplingMesh:
 
     def do_interpolation(self, location: np.ndarray, pivot: np.ndarray, scale: np.ndarray, node: TreeNode) -> OngoingTask:
         if DEBUG:
+            assert(np.all(pivot == node.pivot))
+            assert(np.all(scale == node.scale))
             self.records[tuple(location)].append("do_interpolation")
         if node.type == TreeNode.BRANCH:
             return self.descend_tree(location, pivot, scale, node)
@@ -274,15 +280,20 @@ class SamplingMesh:
         
         mse = 0
         for i in range(NDIM):
-            mse += unscaled_curvatures[i]**2 * 31 / 120
+            mse += unscaled_curvatures[i]**2 * 1 / 30
             for j in range(i + 1, NDIM):
-                mse += unscaled_curvatures[i]**2 * unscaled_curvatures[j]**2 * 25 / 144
+                mse += unscaled_curvatures[i] * unscaled_curvatures[j] * 1 / 36
         
         assert(not np.isnan(mse))
         
         if mse > (self.atol + self.rtol * np.abs(np.mean([x.value for x in child.children.flatten()]) or np.any(scale > self.max_leaf_scale))) ** 2:
+            # Don't want to exceed our floating-point precision
+            if not np.all(scale/2 > (ATOL + RTOL * pivot)):
+                raise RuntimeError("Requested RMSE requires too fine of gradation for floating-point inputs.")
             if child.stable:
                 parent.print()
+                if DEBUG:
+                    print(self.records[tuple(location)])
                 raise RuntimeError("Shouldn't exceed error on stable leaf")
             # Convert the child from a LEAF into a BRANCH with BUD children
             child.type = TreeNode.BRANCH
@@ -330,14 +341,10 @@ class SamplingMesh:
             if np.any(cur_index != index):
                 res = self.root.recfind(bud.leaf_location(pivot, scale, cur_index), self.pivot, self.scale)
                 if res is None:
-                    if DEBUG:
-                        self.records[tuple(location)].append(f"recfind failed to find for {cur_index}")
                     bud.children[tuple(cur_index)] = Pointer(np.NaN)
                     destinations.append(bud.children[tuple(cur_index)])
                     calculations.append(self.submit_func(pivot, scale, cur_index))
                 else:
-                    if DEBUG:
-                        self.records[tuple(location)].append(f"recfind found {res.value}; saving to {cur_index}")
                     bud.children[tuple(cur_index)] = res
                     if np.isnan(res.value):
                         waiting.append(res)
@@ -434,7 +441,7 @@ class SamplingMesh:
                 index_array = TreeNode.index_array(i)
                 if np.isnan(node.children[tuple(index_array)].value):
                     continue
-                if not np.isclose(self.func(TreeNode.leaf_location(pivot, scale, index_array)), node.children[tuple(index_array)].value, atol=1e-10, rtol=0):
+                if not np.isclose(self.func(TreeNode.leaf_location(pivot, scale, index_array)), node.children[tuple(index_array)].value, atol=ATOL, rtol=RTOL):
                     print("Wrong leaf value")
                     print(self.func(TreeNode.leaf_location(pivot, scale, index_array)))
                     print(node.children[tuple(index_array)].value)
@@ -443,7 +450,7 @@ class SamplingMesh:
         else:
             if np.isnan(node.value.value):
                 return True
-            if np.isclose(self.func(TreeNode.leaf_location(pivot, scale, node.index)), node.value.value, atol=1e-10, rtol=0):
+            if np.isclose(self.func(TreeNode.leaf_location(pivot, scale, node.index)), node.value.value, atol=ATOL, rtol=RTOL):
                 return True
             else:
                 print("Wrong bud value")
