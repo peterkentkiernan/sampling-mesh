@@ -9,4 +9,6 @@ Check out SamplingMesh.py for the centerpiece of the project, the SamplingMesh c
 
 Due to fleshing out a full hypercube cell, the first interpolation call to the mesh calls the target function $\mathcal{O} \left(2^{k}\right)$ times, where $k$ is the number of dimensions. However, subsequent calls to that cell don't call the target function at all. If you expect to be calling the function many times over the same region, this can save significant time.
 
-Incoming features: gradient calculation, adaptive cell ratio determination.
+Additionally, with no additional calls to the target function, the mesh can calculate the exact gradient of the interpolation. This also serves as an approximation of the gradient of the target function: the RMSE of this approximation is proportional to the square root of the product of the curvature and the RMSE of the interpolation.
+
+Incoming features: multidimensional output from target function, adaptive cell ratio determination.

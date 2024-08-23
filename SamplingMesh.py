@@ -277,6 +277,10 @@ class SamplingMesh:
         if child.type == TreeNode.BRANCH:
             return self.descend_tree(location, pivot, scale, child)
         assert(child.type == TreeNode.LEAF)
+        
+        for x in child.children.flatten():
+            if np.isnan(x.value):
+                return OngoingTask.waiting_task(lambda: not np.isnan(x.value), lambda: self.zoom_in(location, pivot, scale, parent, corner))
 
         corner_copy = corner.copy()
         unscaled_curvatures = np.zeros(NDIM)
@@ -302,11 +306,16 @@ class SamplingMesh:
         
         assert(not np.isnan(mse))
         
-        if mse > (self.atol + self.rtol * np.abs(np.mean([x.value for x in child.children.flatten()]) or np.any(scale > self.max_leaf_scale))) ** 2:
+        bound = (self.atol + self.rtol * np.abs(np.mean([x.value for x in child.children.flatten()]) or np.any(scale > self.max_leaf_scale))) ** 2
+        
+        assert(not np.isnan(bound))
+        
+        if mse > bound:
             # Don't want to exceed our floating-point precision
             if not np.all(scale/2 > (ATOL + RTOL * pivot)):
                 raise RuntimeError("Requested RMSE requires too fine of gradation for floating-point inputs.")
             if child.stable:
+                print(location)
                 parent.print()
                 if DEBUG:
                     print(self.records[tuple(location)])
