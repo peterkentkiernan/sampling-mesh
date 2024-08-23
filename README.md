@@ -3,7 +3,7 @@ An adaptively scaled interpolation mesh for accelerating repeated function calls
 
 This has similar goals as a caching function wrapper, but for continuously valued inputs.
 
-This is a work in progress.
+This is fully functioning and passes all tests, but is still somewhat unpolished. It can only use functions that take a 1D numpy array as input, and output a single float. Additionally, it is still in need of some optimizations.
 
 Check out SamplingMesh.py for the centerpiece of the project, the SamplingMesh class. This class allows a user to specify an (absolute and/or relative) error tolerance, a function, and a resolution for initial curvature estimates. From this, it creates a mesh (structured as a k-d tree) that allows repeated function calls to the same region to reuse old calculations. This is accomplished by finding the cell the requested point is in, halving the size of the cell in all directions until the root mean squared error (RMSE) is within the requested bounds. This has been tested and confirmed with RMSE as small as $10^{-10}$; if the requested RMSE is so small that floating point precision on function inputs, it will raise an error.
 
