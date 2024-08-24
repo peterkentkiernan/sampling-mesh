@@ -7,7 +7,6 @@ from time import time
 ATOL = 1e-12
 RTOL = 1e-9
 
-NDIM = 4
 DEBUG = False
 
 class Pointer:
@@ -29,7 +28,7 @@ class TreeNode:
 
     @classmethod
     def bud(cls, value, index):
-        children = np.full((2,) * NDIM, None, dtype=object)
+        children = np.full((2,) * len(index), None, dtype=object)
         children[tuple(index)] = value
         return cls(cls.BUD, children, index)
 
@@ -54,8 +53,8 @@ class TreeNode:
         self.children[tuple(self.index)] = new_value
 
     @staticmethod
-    def index_array(index: int):
-        return (np.floor(index / 2**np.arange(NDIM)) % 2).astype(int)
+    def index_array(index: int, ndim: int):
+        return (np.floor(index / 2**np.arange(ndim)) % 2).astype(int)
 
     # pivot is the center of a node; scale is the side length
     @staticmethod
@@ -78,7 +77,7 @@ class TreeNode:
         if value is None:
             value = self.value
         cur = self.type
-        return lambda: (self.type != cur) or (not np.isnan(value.value))
+        return lambda: (self.type != cur) or (not np.any(np.isnan(value.value)))
 
     def recfind(self, location: np.ndarray, pivot: np.ndarray, scale: np.ndarray) -> Pointer:
         if DEBUG:
@@ -93,22 +92,22 @@ class TreeNode:
         if self.type == TreeNode.BRANCH:
             close = np.isclose(pivot, location, atol=ATOL, rtol=RTOL)
             greater = location > pivot
-            for i in range(2 ** NDIM):
-                index_array = self.index_array(i)
+            for i in range(2 ** self.children.ndim):
+                index_array = self.index_array(i, self.children.ndim)
                 if np.all(np.logical_or(index_array.astype(bool) == greater, close)):
                     res = self.children[tuple(index_array)].recfind(location, *self.child_pivot_and_scale(pivot, scale, index_array))
                     if res is not None:
                         return res
             return None
         elif self.type == TreeNode.LEAF:
-            lower_close = np.isclose(location, self.leaf_location(pivot, scale, np.zeros(NDIM)), atol=ATOL, rtol=RTOL).astype(int)
-            upper_close = np.isclose(location, self.leaf_location(pivot, scale, np.ones(NDIM)), atol=ATOL, rtol=RTOL).astype(int)
+            lower_close = np.isclose(location, self.leaf_location(pivot, scale, np.zeros(self.children.ndim)), atol=ATOL, rtol=RTOL).astype(int)
+            upper_close = np.isclose(location, self.leaf_location(pivot, scale, np.ones(self.children.ndim)), atol=ATOL, rtol=RTOL).astype(int)
             if np.any(lower_close + upper_close == 0):
                 return None
             else:
                 return self.children[tuple(upper_close)]
         elif self.type == TreeNode.BUD:
-            index_array = self.index_array(self.index)
+            index_array = self.index_array(self.index, self.children.ndim)
             if np.allclose(location, self.leaf_location(pivot, scale, index_array), atol=ATOL, rtol=RTOL):
                 return self.children[tuple(index_array)]
             else:
@@ -130,7 +129,7 @@ class TreeNode:
     def adjacent_corner_values(self, corner: np.ndarray) -> list[Pointer]:
         output = []
         corner_copy = corner.copy()
-        for i in range(NDIM):
+        for i in range(self.children.ndim):
             corner_copy[i] = 1 if corner_copy[i] == 0 else 0
             output.append(self.corner_value(corner_copy))
             corner_copy[i] = corner[i]
@@ -198,48 +197,52 @@ class OngoingTask:
         return self.next_task()
 
 class SamplingMesh:
-    def __init__(self, func, pool, atol = 0, rtol = 0, pivot = None, scale = None, args = None, kwargs = None):
+    def __init__(self, func, pool, indim, outdim = None, atol = 0, rtol = 0, pivot = None, scale = None, args = None, kwargs = None):
         if atol == 0 and rtol == 0:
             raise ValueError("Must have nonzero error tolerance")
         self.func = func
         self.pool = pool
         self.atol = atol
         self.rtol = rtol
-        self.pivot = pivot if pivot is not None else np.zeros(NDIM)
-        self.scale = scale if scale is not None else np.ones(NDIM)
+        self.pivot = pivot if pivot is not None else np.zeros(indim)
+        self.scale = scale if scale is not None else np.ones(indim)
         self.max_leaf_scale = np.copy(self.scale)
         self.root = None
         self.args = args if args is not None else tuple()
         self.kwargs = kwargs if kwargs is not None else {}
+        
+        self.indim = indim
+        self.outdim = tuple() if outdim is None else outdim if isinstance(outdim, tuple) else (outdim,)
+        
+        
         self.func_calls = 0
         self.interpolations = 0
         self.gradients = 0
         self.records = {}
+        
     
     # Position is normalized to have interpolating points at +/- 1 in all dimensions
     # Generalized form of https://en.wikipedia.org/wiki/Bilinear_interpolation
-    @staticmethod
-    def interpolate(position: np.ndarray, data: np.ndarray) -> float:
+    def interpolate(self, position: np.ndarray, data: np.ndarray) -> float:
         assert(np.all(position <= 1) and np.all(position >= -1))
         interpolated = data
-        for i in range(NDIM):
+        for i in range(self.indim):
             interpolated = (1 - position[i]) * interpolated[0,...] + (position[i] + 1) * interpolated[1,...]
-        return interpolated / 2**NDIM
+        return interpolated / 2**self.indim
     
-    @staticmethod
-    def gradient(position: np.ndarray, data: np.ndarray, scale: np.ndarray) -> np.ndarray:
+    def gradient(self, position: np.ndarray, data: np.ndarray, scale: np.ndarray) -> np.ndarray:
         assert(np.all(position <= 1) and np.all(position >= -1))
-        gradient = np.empty((NDIM,))
-        for i in range(NDIM):
-            diffs = data[(slice(None),) * i + (1,) + (slice(None),) * (NDIM - i - 1)] - \
-                    data[(slice(None),) * i + (0,) + (slice(None),) * (NDIM - i - 1)]
+        gradient = np.empty((self.indim,) + self.outdim)
+        for i in range(self.indim):
+            diffs = data[(slice(None),) * i + (1,) + (slice(None),) * (self.indim - i - 1) + (...,)] - \
+                    data[(slice(None),) * i + (0,) + (slice(None),) * (self.indim - i - 1) + (...,)]
             
-            for j in range(NDIM):
+            for j in range(self.indim):
                 if j != i:
                     diffs = (1 - position[j]) * diffs[0,...] + (position[j] + 1) * diffs[1,...]
             
-            gradient[i] = diffs
-        gradient /= scale * 2**(NDIM - 1)
+            gradient[i, ...] = diffs
+        gradient /= scale[(slice(None),) + (None,) * len(self.outdim)] * 2**(self.indim - 1)
         return gradient
 
     def submit_func(self, pivot: np.ndarray, scale: np.ndarray, index: np.ndarray):
@@ -259,12 +262,12 @@ class SamplingMesh:
         if not node.stable:
             return OngoingTask.waiting_task(lambda: node.stable, lambda: self.do_interpolation(location, pivot, scale, node))
 
-        data = np.empty((2,) * NDIM)
-        for i in range(2 ** NDIM):
-            index_array = node.index_array(i)
+        data = np.empty((2,) * self.indim + self.outdim)
+        for i in range(2 ** self.indim):
+            index_array = node.index_array(i, self.indim)
             pointer = node.children[tuple(index_array)]
             assert(isinstance(pointer, Pointer))
-            if np.isnan(pointer.value):
+            if np.any(np.isnan(pointer.value)):
                 return OngoingTask.waiting_task(node.updated(pointer), lambda: self.do_interpolation(location, pivot, scale, node))
             data[tuple(index_array)] = pointer.value
         return OngoingTask.complete_task((node.normalize_location(pivot, scale, location), data, scale))
@@ -279,30 +282,30 @@ class SamplingMesh:
         assert(child.type == TreeNode.LEAF)
         
         for x in child.children.flatten():
-            if np.isnan(x.value):
-                return OngoingTask.waiting_task(lambda: not np.isnan(x.value), lambda: self.zoom_in(location, pivot, scale, parent, corner))
+            if np.any(np.isnan(x.value)):
+                return OngoingTask.waiting_task(lambda: not np.any(np.isnan(x.value)), lambda: self.zoom_in(location, pivot, scale, parent, corner))
 
         corner_copy = corner.copy()
-        unscaled_curvatures = np.zeros(NDIM)
-        for i in range(NDIM):
+        unscaled_curvatures = np.zeros((self.indim,) + self.outdim)
+        for i in range(self.indim):
             corner_copy[i] = 1 if corner_copy[i] == 0 else 0
             p1 = child.children[tuple(corner)]
-            if np.isnan(p1.value):
-                return OngoingTask.waiting_task(lambda: not np.isnan(p1.value), lambda: self.zoom_in(location, pivot, scale, parent, corner))
+            if np.any(np.isnan(p1.value)):
+                return OngoingTask.waiting_task(lambda: not np.any(np.isnan(p1.value)), lambda: self.zoom_in(location, pivot, scale, parent, corner))
             p2 = child.children[tuple(corner_copy)]
-            if np.isnan(p2.value):
-                return OngoingTask.waiting_task(lambda: not np.isnan(p2.value), lambda: self.zoom_in(location, pivot, scale, parent, corner))
+            if np.any(np.isnan(p2.value)):
+                return OngoingTask.waiting_task(lambda: not np.any(np.isnan(p2.value)), lambda: self.zoom_in(location, pivot, scale, parent, corner))
             p3 = parent.corner_value(corner_copy)
-            if np.isnan(p3.value):
-                return OngoingTask.waiting_task(lambda: not np.isnan(p3.value), lambda: self.zoom_in(location, pivot, scale, parent, corner))
+            if np.any(np.isnan(p3.value)):
+                return OngoingTask.waiting_task(lambda: not np.any(np.isnan(p3.value)), lambda: self.zoom_in(location, pivot, scale, parent, corner))
             unscaled_curvatures[i] = p1.value - 2 * p2.value + p3.value
             corner_copy[i] = corner[i]
         
         mse = 0
-        for i in range(NDIM):
-            mse += unscaled_curvatures[i]**2 * 1 / 30
-            for j in range(i + 1, NDIM):
-                mse += unscaled_curvatures[i] * unscaled_curvatures[j] * 1 / 36
+        for i in range(self.indim):
+            mse += np.sum(unscaled_curvatures[i]**2) / 30
+            for j in range(i + 1, self.indim):
+                mse += np.sum(unscaled_curvatures[i] * unscaled_curvatures[j]) / 36
         
         assert(not np.isnan(mse))
         
@@ -326,8 +329,8 @@ class SamplingMesh:
             if DEBUG:
                 child.pivot = np.copy(pivot)
                 child.scale = np.copy(scale)
-            for i in range(2 ** NDIM):
-                index = child.index_array(i)
+            for i in range(2 ** self.indim):
+                index = child.index_array(i, self.indim)
                 child.children[tuple(index)] = TreeNode.bud(child.children[tuple(index)], index)
                 if DEBUG:
                     node = child.children[tuple(index)]
@@ -354,15 +357,15 @@ class SamplingMesh:
         if bud.type == TreeNode.BRANCH:
             return self.descend_tree(location, pivot, scale, bud)
         
-        if np.isnan(bud.value.value):
+        if np.any(np.isnan(bud.value.value)):
             return OngoingTask.waiting_task(bud.updated(), lambda: self.bud_to_leaf(location, pivot, scale, parent, index))
 
         bud.type = TreeNode.LEAF
         destinations = []
         calculations = []
         waiting = []
-        for i in range(2 ** NDIM):
-            cur_index = bud.index_array(i)
+        for i in range(2 ** self.indim):
+            cur_index = bud.index_array(i, self.indim)
             if np.any(cur_index != index):
                 res = self.root.recfind(bud.leaf_location(pivot, scale, cur_index), self.pivot, self.scale)
                 if res is None:
@@ -371,7 +374,7 @@ class SamplingMesh:
                     calculations.append(self.submit_func(pivot, scale, cur_index))
                 else:
                     bud.children[tuple(cur_index)] = res
-                    if np.isnan(res.value):
+                    if np.any(np.isnan(res.value)):
                         waiting.append(res)
         if len(waiting) > 0:
             next_task = OngoingTask.waiting_task(lambda: not np.any(np.isnan([x.value for x in waiting])), lambda: self.zoom_in(location, pivot, scale, parent, index))
@@ -404,17 +407,17 @@ class SamplingMesh:
             if tuple(location) not in self.records:
                 self.records[tuple(location)] = []
             self.records[tuple(location)].append("expand_tree")
-        too_low = location < TreeNode.leaf_location(self.pivot, self.scale, np.zeros(NDIM))
-        too_high = location > TreeNode.leaf_location(self.pivot, self.scale, np.ones(NDIM))
+        too_low = location < TreeNode.leaf_location(self.pivot, self.scale, np.zeros(self.indim))
+        too_high = location > TreeNode.leaf_location(self.pivot, self.scale, np.ones(self.indim))
         if np.any(too_low) or np.any(too_high) or self.root is None:
             # Expand in positive direction by default
             too_low = too_low.astype(int)
             self.pivot, self.scale = TreeNode.parent_pivot_and_scale(self.pivot, self.scale, too_low)
-            children = np.empty((2,) * NDIM, dtype=object)
+            children = np.empty((2,) * self.indim, dtype=object)
             destinations = []
             calculations = []
-            for i in range(2 ** NDIM):
-                index = TreeNode.index_array(i)
+            for i in range(2 ** self.indim):
+                index = TreeNode.index_array(i, self.indim)
                 if np.all(index == too_low) and self.root is not None:
                     children[tuple(index)] = self.root
                 else:
@@ -456,15 +459,15 @@ class SamplingMesh:
                 return False
         
         if node.type == TreeNode.BRANCH:
-            for i in range(2 ** NDIM):
-                index_array = TreeNode.index_array(i)
+            for i in range(2 ** self.children.ndim):
+                index_array = TreeNode.index_array(i, self.indim)
                 if not self.validate_tree(*TreeNode.child_pivot_and_scale(pivot, scale, index_array), node.children[tuple(index_array)]):
                     return False
             return True
         elif node.type == TreeNode.LEAF:
-            for i in range(2 ** NDIM):
-                index_array = TreeNode.index_array(i)
-                if np.isnan(node.children[tuple(index_array)].value):
+            for i in range(2 ** self.children.ndim):
+                index_array = TreeNode.index_array(i, self.indim)
+                if np.any(np.isnan(node.children[tuple(index_array)].value)):
                     continue
                 if not np.isclose(self.func(TreeNode.leaf_location(pivot, scale, index_array)), node.children[tuple(index_array)].value, atol=ATOL, rtol=RTOL):
                     print("Wrong leaf value")
@@ -473,7 +476,7 @@ class SamplingMesh:
                     return False
             return True
         else:
-            if np.isnan(node.value.value):
+            if np.any(np.isnan(node.value.value)):
                 return True
             if np.isclose(self.func(TreeNode.leaf_location(pivot, scale, node.index)), node.value.value, atol=ATOL, rtol=RTOL):
                 return True
@@ -486,7 +489,7 @@ class SamplingMesh:
     def multi_interpolate(self, locations, max_time = np.inf):
         start = time()
         tasks = [self.expand_tree(loc) for loc in locations]
-        results = np.ones(len(tasks)) * np.NaN
+        results = np.zeros((len(tasks),) + self.outdim) * np.NaN
 
         incomplete = True
         while incomplete:
@@ -519,7 +522,7 @@ class SamplingMesh:
     def multi_gradient(self, locations, max_time = np.inf):
         start = time()
         tasks = [self.expand_tree(loc) for loc in locations]
-        results = np.ones((len(tasks), NDIM)) * np.NaN
+        results = np.ones((len(tasks), self.indim) + self.outdim) * np.NaN
 
         incomplete = True
         while incomplete:

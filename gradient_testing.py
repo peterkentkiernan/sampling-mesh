@@ -1,21 +1,28 @@
 import multiprocessing as mp
 import numpy as np # Just utility
-from scipy.optimize import check_grad # For comparison gradient
 import SamplingMesh
 
 def parabola(x):
     return np.sum(x**2, axis=-1)
 
-def centered_gradient(func, xs, step_size=1e-8):
-    grad = np.zeros_like(xs)
+def complex_square(x):
+    return np.stack((x[..., 0]**2 - x[..., 1]**2, 2 * x[..., 0] * x[..., 1]), axis=-1)
+
+def centered_gradient(func, xs, step_size=1e-8, outdim=None):
+    if outdim is None:
+        outdim = tuple()
+    elif not isinstance(outdim, tuple):
+        outdim = (outdim,)
+    grad = np.zeros(xs.shape + outdim)
     ndim = xs.shape[-1]
     for i in range(ndim):
         delta = np.zeros((1, ndim))
         delta[0, i] = step_size / 2
-        grad[:,i] = (func(xs + delta) - func(xs - delta)) / step_size
+        grad[:,i,...] = (func(xs + delta) - func(xs - delta)) / step_size
     return grad
 
 if __name__ == '__main__':
+    
     #SamplingMesh.DEBUG = True
     
     # First: test if our gradient does indeed approach the true gradient
@@ -31,11 +38,10 @@ if __name__ == '__main__':
              ("3D parabola", 3, parabola, np.ones(3))]
     
     for name, ndim, f, resolution in tests:
-        SamplingMesh.NDIM = ndim
         for atol in (1e-2, 1e-4, 1e-6, 1e-8, 1e-10):
             with mp.Pool() as pool:
-                mesh = SamplingMesh.SamplingMesh(f, pool, scale=resolution, atol=atol, rtol=0)
-                xs = np.random.normal(size = (100, SamplingMesh.NDIM))
+                mesh = SamplingMesh.SamplingMesh(f, pool, ndim, scale=resolution, atol=atol, rtol=0)
+                xs = np.random.normal(size = (100, ndim))
                 try:
                     grads = mesh.multi_gradient(xs)
                 except Exception as e:
@@ -60,24 +66,23 @@ if __name__ == '__main__':
     #SamplingMesh.DEBUG = True
     
     
+    tests = [("1D_parabola", 1, None, parabola, np.ones(1)),
+             ("2D_parabola", 2, None, parabola, np.ones(2)),
+             ("3D_parabola", 3, None, parabola, np.ones(3)),
+             ("complex_squaring", 2, 2, complex_square, np.ones(2))]
     
-    tests = [("1D_parabola", 1, parabola, np.ones(1)),
-             ("2D_parabola", 2, parabola, np.ones(2)),
-             ("3D_parabola", 3, parabola, np.ones(3))]
     
-    
-    for name, ndim, f, resolution in tests:
-        xs = np.random.normal(size = (1000, SamplingMesh.NDIM))
+    for name, ndim, outdim, f, resolution in tests:
+        xs = np.random.normal(size = (1000, ndim))
         # Find rounding error mse
-        inherent_rmse = np.sqrt(np.mean((2 * xs - centered_gradient(f, xs))**2))
-        SamplingMesh.NDIM = ndim
+        inherent_rmse = np.sqrt(np.mean((2 * xs - centered_gradient(parabola, xs))**2))
         for atol in (1e-2, 1e-4, 1e-6, 1e-8, 1e-10):
             with mp.Pool() as pool:
-                mesh = SamplingMesh.SamplingMesh(f, pool, scale=resolution, atol=atol, rtol=0)
-                xs = np.random.normal(size = (1000, SamplingMesh.NDIM))
+                mesh = SamplingMesh.SamplingMesh(f, pool, ndim, outdim, scale=resolution, atol=atol, rtol=0)
+                xs = np.random.normal(size = (1000, ndim))
                 try:
                     grads = mesh.multi_gradient(xs)
-                    rmse = np.sqrt(np.mean((centered_gradient(mesh.multi_interpolate, xs) - grads)**2))
+                    rmse = np.sqrt(np.mean((centered_gradient(mesh.multi_interpolate, xs, outdim=outdim) - grads)**2))
                 except Exception as e:
                     print(f"Encountered error on {name} with atol {atol}")
                     raise e
@@ -87,4 +92,3 @@ if __name__ == '__main__':
                 print(f"WARNING: Interpolation gradients are not close enough for {name} with interpolation atol {atol}; observed gradient RMSE is {rmse}")
             else:
                 print(f"Interpolation gradients are close enough for {name} with atol {atol}; observed gradient RMSE is {rmse}")
-            
