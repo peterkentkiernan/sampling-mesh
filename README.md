@@ -13,4 +13,4 @@ Due to fleshing out a full hypercube cell, the first interpolation call to the m
 
 Additionally, with no additional calls to the target function, the mesh can calculate the exact gradient of the interpolation. This also serves as an approximation of the gradient of the target function: the RMSE of this approximation is proportional to the square root of the product of the curvature and the RMSE of the interpolation.
 
-Incoming features: multidimensional output from target function, adaptive cell ratio determination.
+Incoming features: adaptive cell ratio determination.
