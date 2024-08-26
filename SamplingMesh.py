@@ -369,7 +369,7 @@ class SamplingMesh:
             if np.any(cur_index != index):
                 res = self.root.recfind(bud.leaf_location(pivot, scale, cur_index), self.pivot, self.scale)
                 if res is None:
-                    bud.children[tuple(cur_index)] = Pointer(np.NaN)
+                    bud.children[tuple(cur_index)] = Pointer(np.zeros(self.outdim) * np.NaN)
                     destinations.append(bud.children[tuple(cur_index)])
                     calculations.append(self.submit_func(pivot, scale, cur_index))
                 else:
@@ -421,7 +421,7 @@ class SamplingMesh:
                 if np.all(index == too_low) and self.root is not None:
                     children[tuple(index)] = self.root
                 else:
-                    dest = Pointer(np.NaN)
+                    dest = Pointer(np.zeros(self.outdim) * np.NaN)
                     children[tuple(index)] = TreeNode.bud(dest, index)
                     if DEBUG:
                         node = children[tuple(index)]
